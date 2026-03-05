@@ -1,0 +1,22 @@
+name: melos_workspace
+
+packages:
+  - apps/**
+  - packages/**
+
+scripts:
+
+  bootstrap:
+    run: flutter pub get
+
+  analyze:
+    run: melos exec -- flutter analyze
+
+  build:
+    run: melos exec --depends-on=build_runner -- dart run build_runner build --delete-conflict-outputs
+
+  run:demo:
+    run: melos exec --scope=demo -- flutter run
+
+  run:demo2:
+    run: melos exec --scope=demo_2 -- flutter run
