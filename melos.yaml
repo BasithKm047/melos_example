@@ -20,3 +20,6 @@ scripts:
 
   run:demo2:
     run: melos exec --scope=demo_2 -- flutter run
+
+  run:todo:
+    run: melos exec --scope=todo_app -- flutter run

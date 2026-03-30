@@ -6,6 +6,8 @@ environment:
 workspace:
   - apps/demo
   - apps/demo_2
+  - apps/counter_app
+  - apps/todo_app
   - packages/core
   - packages/design_system
 
