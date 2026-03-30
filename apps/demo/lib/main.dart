@@ -2,8 +2,10 @@ import 'dart:async';
 
 import 'package:core/core.dart';
 import 'package:design_system/design_system.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:flutter/services.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -191,7 +193,7 @@ class _OrderTrackingPageState extends State<OrderTrackingPage> {
             Text('Progress: ${stage.progress}%'),
             const SizedBox(height: 8),
             const Text(
-              'Android shows a lock-screen progress bar. iOS receives progress updates; Live Activities can be added for lock-screen UI.',
+              'Android shows lock-screen progress notifications. iOS updates a Live Activity on the lock screen.',
             ),
           ],
         ),
@@ -316,7 +318,10 @@ class OrderProgressUpdate {
 abstract class OrderNotificationService {
   Future<void> initialize();
   Future<void> requestPermissions();
-  Future<void> showOrderProgress(OrderProgressUpdate update, {required bool ongoing});
+  Future<void> showOrderProgress(
+    OrderProgressUpdate update, {
+    required bool ongoing,
+  });
   void dispose();
 }
 
@@ -326,6 +331,7 @@ class LocalOrderNotificationService implements OrderNotificationService {
 
   final FlutterLocalNotificationsPlugin _plugin =
       FlutterLocalNotificationsPlugin();
+  final IosLiveActivityClient _iosLiveActivityClient = IosLiveActivityClient();
 
   bool _isInitialized = false;
 
@@ -342,8 +348,8 @@ class LocalOrderNotificationService implements OrderNotificationService {
 
     await _plugin.initialize(initializationSettings);
 
-    final androidPlugin =
-        _plugin.resolvePlatformSpecificImplementation<
+    final androidPlugin = _plugin
+        .resolvePlatformSpecificImplementation<
           AndroidFlutterLocalNotificationsPlugin
         >();
 
@@ -365,14 +371,14 @@ class LocalOrderNotificationService implements OrderNotificationService {
       await initialize();
     }
 
-    final androidPlugin =
-        _plugin.resolvePlatformSpecificImplementation<
+    final androidPlugin = _plugin
+        .resolvePlatformSpecificImplementation<
           AndroidFlutterLocalNotificationsPlugin
         >();
     await androidPlugin?.requestNotificationsPermission();
 
-    final iosPlugin =
-        _plugin.resolvePlatformSpecificImplementation<
+    final iosPlugin = _plugin
+        .resolvePlatformSpecificImplementation<
           IOSFlutterLocalNotificationsPlugin
         >();
     await iosPlugin?.requestPermissions(alert: true, badge: true, sound: true);
@@ -415,9 +421,47 @@ class LocalOrderNotificationService implements OrderNotificationService {
       NotificationDetails(android: androidDetails, iOS: iosDetails),
       payload: 'order_${update.orderId}',
     );
+
+    if (!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS) {
+      await _iosLiveActivityClient.sync(update, ongoing: ongoing);
+    }
   }
 
   @override
   void dispose() {}
 }
 
+class IosLiveActivityClient {
+  static const MethodChannel _channel = MethodChannel('order_live_activity');
+  final Set<int> _startedOrders = <int>{};
+
+  Future<void> sync(OrderProgressUpdate update, {required bool ongoing}) async {
+    final arguments = <String, Object>{
+      'orderId': update.orderId,
+      'productName': update.productName,
+      'statusLabel': update.statusLabel,
+      'progress': update.progress,
+    };
+
+    try {
+      if (!_startedOrders.contains(update.orderId)) {
+        await _channel.invokeMethod<String>('startLiveActivity', arguments);
+        _startedOrders.add(update.orderId);
+        if (!ongoing) {
+          await _channel.invokeMethod<void>('endLiveActivity', arguments);
+          _startedOrders.remove(update.orderId);
+        }
+        return;
+      }
+
+      if (ongoing) {
+        await _channel.invokeMethod<void>('updateLiveActivity', arguments);
+      } else {
+        await _channel.invokeMethod<void>('endLiveActivity', arguments);
+        _startedOrders.remove(update.orderId);
+      }
+    } on PlatformException {
+      // Keep notification delivery working even if Live Activities are unavailable.
+    }
+  }
+}
