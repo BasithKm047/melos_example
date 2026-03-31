@@ -12,6 +12,7 @@ dependencies:
   core: any
   design_system: any
   flutter_local_notifications: ^19.4.2
+  live_activities: ^2.4.2
 
 dev_dependencies:
   flutter_test:

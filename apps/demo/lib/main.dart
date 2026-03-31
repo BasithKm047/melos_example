@@ -5,7 +5,7 @@ import 'package:design_system/design_system.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import 'package:flutter/services.dart';
+import 'package:live_activities/live_activities.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -350,6 +350,9 @@ class LocalOrderNotificationService implements OrderNotificationService {
 
     await _plugin.initialize(initializationSettings);
 
+    await _iosLiveActivityClient.initialize();
+    await _androidLiveActivityClient.initialize();
+
     final androidPlugin = _plugin
         .resolvePlatformSpecificImplementation<
           AndroidFlutterLocalNotificationsPlugin
@@ -445,99 +448,139 @@ class LocalOrderNotificationService implements OrderNotificationService {
       NotificationDetails(android: androidDetails, iOS: iosDetails),
       payload: 'order_${update.orderId}',
     );
-
-    if (!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS) {
-      await _iosLiveActivityClient.sync(update, ongoing: ongoing);
-    }
   }
 
   @override
-  void dispose() {}
+  void dispose() {
+    _iosLiveActivityClient.dispose();
+    _androidLiveActivityClient.dispose();
+  }
 }
 
 class IosLiveActivityClient {
-  static const MethodChannel _channel = MethodChannel('order_live_activity');
-  final Set<int> _startedOrders = <int>{};
+  static const String _appGroupId = 'group.com.example.demo.liveactivities';
+  final LiveActivities _plugin = LiveActivities();
+  bool _isInitialized = false;
+
+  Future<void> initialize() async {
+    if (_isInitialized ||
+        kIsWeb ||
+        defaultTargetPlatform != TargetPlatform.iOS) {
+      return;
+    }
+    await _plugin.init(appGroupId: _appGroupId);
+    _isInitialized = true;
+  }
 
   Future<bool> sync(OrderProgressUpdate update, {required bool ongoing}) async {
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.iOS) {
+      return false;
+    }
+
+    final activityId = 'order_${update.orderId}';
     final arguments = <String, Object>{
-      'orderId': update.orderId,
+      'brand': 'demo express',
+      'subtitle': update.progress >= 100
+          ? 'Thank you for placing the order!'
+          : 'Your order is on the way',
+      'title': update.progress >= 100 ? 'Order arrived' : update.statusLabel,
       'productName': update.productName,
+      'orderId': update.orderId.toString(),
+      'actionLabel': update.progress >= 100 ? 'Rate order' : 'Track order',
       'statusLabel': update.statusLabel,
       'progress': update.progress,
     };
 
     try {
-      if (!_startedOrders.contains(update.orderId)) {
-        await _channel.invokeMethod<String>('startLiveActivity', arguments);
-        _startedOrders.add(update.orderId);
-        if (!ongoing) {
-          await _channel.invokeMethod<void>('endLiveActivity', arguments);
-          _startedOrders.remove(update.orderId);
-        }
-        return true;
-      }
-
-      if (ongoing) {
-        await _channel.invokeMethod<void>('updateLiveActivity', arguments);
-      } else {
-        await _channel.invokeMethod<void>('endLiveActivity', arguments);
-        _startedOrders.remove(update.orderId);
+      await initialize();
+      await _plugin.createOrUpdateActivity(
+        activityId,
+        arguments,
+        removeWhenAppIsKilled: true,
+      );
+      if (!ongoing) {
+        await _plugin.endActivity(activityId);
       }
       return true;
-    } on PlatformException {
-      return false;
-    } on MissingPluginException {
-      // Keep notification delivery working even if Live Activities are unavailable.
+    } on Exception {
       return false;
     }
+  }
+
+  void dispose() {
+    unawaited(_plugin.dispose());
   }
 }
 
 class AndroidLiveActivityClient {
-  static const MethodChannel _channel = MethodChannel(
-    'order_android_live_activity',
-  );
+  static const String _appGroupId = 'group.com.example.demo.liveactivities';
+  final LiveActivities _plugin = LiveActivities();
+  bool _isInitialized = false;
   final Set<int> _startedOrders = <int>{};
 
+  Future<void> initialize() async {
+    if (_isInitialized ||
+        kIsWeb ||
+        defaultTargetPlatform != TargetPlatform.android) {
+      return;
+    }
+    await _plugin.init(appGroupId: _appGroupId);
+    _isInitialized = true;
+  }
+
   Future<bool> sync(OrderProgressUpdate update, {required bool ongoing}) async {
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) {
+      return false;
+    }
+
+    final activityId = 'order_${update.orderId}';
     final arguments = <String, Object>{
-      'orderId': update.orderId,
+      'brand': 'demo express',
+      'subtitle': update.progress >= 100
+          ? 'Thank you for placing the order!'
+          : '${update.productName} is on the way',
+      'title': update.progress >= 100 ? 'Order arrived' : update.statusLabel,
       'productName': update.productName,
+      'orderId': update.orderId.toString(),
+      'actionLabel': update.progress >= 100 ? 'Rate order' : 'Track order',
       'statusLabel': update.statusLabel,
       'progress': update.progress,
     };
 
     try {
+      await initialize();
+
       if (!_startedOrders.contains(update.orderId)) {
-        final started =
-            await _channel.invokeMethod<bool>('startLiveActivity', arguments) ??
-            false;
-        if (!started) {
+        final created = await _plugin.createActivity(
+          activityId,
+          arguments,
+          removeWhenAppIsKilled: true,
+        );
+        if (created == null) {
           return false;
         }
         _startedOrders.add(update.orderId);
         if (!ongoing) {
-          await _channel.invokeMethod<bool>('endLiveActivity', arguments);
+          await _plugin.endActivity(activityId);
           _startedOrders.remove(update.orderId);
         }
         return true;
       }
 
       if (ongoing) {
-        final updated =
-            await _channel.invokeMethod<bool>('updateLiveActivity', arguments) ??
-            false;
-        return updated;
+        await _plugin.updateActivity(activityId, arguments);
+        return true;
       }
 
-      await _channel.invokeMethod<bool>('endLiveActivity', arguments);
+      await _plugin.endActivity(activityId);
       _startedOrders.remove(update.orderId);
       return true;
-    } on PlatformException {
-      return false;
-    } on MissingPluginException {
+    } on Exception {
       return false;
     }
+  }
+
+  void dispose() {
+    unawaited(_plugin.dispose());
   }
 }
