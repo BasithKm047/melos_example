@@ -332,6 +332,8 @@ class LocalOrderNotificationService implements OrderNotificationService {
   final FlutterLocalNotificationsPlugin _plugin =
       FlutterLocalNotificationsPlugin();
   final IosLiveActivityClient _iosLiveActivityClient = IosLiveActivityClient();
+  final AndroidLiveActivityClient _androidLiveActivityClient =
+      AndroidLiveActivityClient();
 
   bool _isInitialized = false;
 
@@ -393,6 +395,28 @@ class LocalOrderNotificationService implements OrderNotificationService {
       await initialize();
     }
 
+    final isIos = !kIsWeb && defaultTargetPlatform == TargetPlatform.iOS;
+    if (isIos) {
+      final liveActivitySynced = await _iosLiveActivityClient.sync(
+        update,
+        ongoing: ongoing,
+      );
+      if (liveActivitySynced) {
+        return;
+      }
+    }
+
+    final isAndroid = !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
+    if (isAndroid) {
+      final liveActivitySynced = await _androidLiveActivityClient.sync(
+        update,
+        ongoing: ongoing,
+      );
+      if (liveActivitySynced) {
+        return;
+      }
+    }
+
     final androidDetails = AndroidNotificationDetails(
       _channelId,
       _channelName,
@@ -435,7 +459,7 @@ class IosLiveActivityClient {
   static const MethodChannel _channel = MethodChannel('order_live_activity');
   final Set<int> _startedOrders = <int>{};
 
-  Future<void> sync(OrderProgressUpdate update, {required bool ongoing}) async {
+  Future<bool> sync(OrderProgressUpdate update, {required bool ongoing}) async {
     final arguments = <String, Object>{
       'orderId': update.orderId,
       'productName': update.productName,
@@ -451,7 +475,7 @@ class IosLiveActivityClient {
           await _channel.invokeMethod<void>('endLiveActivity', arguments);
           _startedOrders.remove(update.orderId);
         }
-        return;
+        return true;
       }
 
       if (ongoing) {
@@ -460,8 +484,60 @@ class IosLiveActivityClient {
         await _channel.invokeMethod<void>('endLiveActivity', arguments);
         _startedOrders.remove(update.orderId);
       }
+      return true;
     } on PlatformException {
+      return false;
+    } on MissingPluginException {
       // Keep notification delivery working even if Live Activities are unavailable.
+      return false;
+    }
+  }
+}
+
+class AndroidLiveActivityClient {
+  static const MethodChannel _channel = MethodChannel(
+    'order_android_live_activity',
+  );
+  final Set<int> _startedOrders = <int>{};
+
+  Future<bool> sync(OrderProgressUpdate update, {required bool ongoing}) async {
+    final arguments = <String, Object>{
+      'orderId': update.orderId,
+      'productName': update.productName,
+      'statusLabel': update.statusLabel,
+      'progress': update.progress,
+    };
+
+    try {
+      if (!_startedOrders.contains(update.orderId)) {
+        final started =
+            await _channel.invokeMethod<bool>('startLiveActivity', arguments) ??
+            false;
+        if (!started) {
+          return false;
+        }
+        _startedOrders.add(update.orderId);
+        if (!ongoing) {
+          await _channel.invokeMethod<bool>('endLiveActivity', arguments);
+          _startedOrders.remove(update.orderId);
+        }
+        return true;
+      }
+
+      if (ongoing) {
+        final updated =
+            await _channel.invokeMethod<bool>('updateLiveActivity', arguments) ??
+            false;
+        return updated;
+      }
+
+      await _channel.invokeMethod<bool>('endLiveActivity', arguments);
+      _startedOrders.remove(update.orderId);
+      return true;
+    } on PlatformException {
+      return false;
+    } on MissingPluginException {
+      return false;
     }
   }
 }
